@@ -5,12 +5,22 @@ from tkinter import ttk
 from tkcalendar import *
 import numpy as np
 import pandas as pd
+import statsmodels.tsa.statespace._filters._conventional
+import statsmodels.tsa.statespace._filters._univariate_diffuse
+import statsmodels.tsa.statespace._filters._univariate
+import statsmodels.tsa.statespace._filters._inversions
+import statsmodels.tsa.statespace._smoothers
+import statsmodels.tsa.statespace._smoothers._conventional
+import statsmodels.tsa.statespace._smoothers._univariate
+import statsmodels.tsa.statespace._smoothers._univariate_diffuse
+import statsmodels.tsa.statespace._smoothers._classical
+import statsmodels.tsa.statespace._smoothers._alternative
+import sklearn.utils._weight_vector
 import plotly.graph_objects as go
 from scipy.optimize import fsolve
 from plotly.subplots import make_subplots
 from datetime import date, timedelta
-import xlwings as xw
-import math
+from pmdarima.arima import auto_arima
 
 # Definir Colores
 d_color = {'fondo': '#BDBDBD', 'boton': 'gray', 'framew': 'gray60', 'letra': '#BDBDBD'}
@@ -88,7 +98,6 @@ class splitdate:
 
         return fta, ftb, ftc, Wa, Wb, Wc, ta, tb, tc
 
-
 class convdf:                               #convertir en dataframe
     def __init__(self, ft, y, name):
         self.ft = ft
@@ -149,7 +158,7 @@ class Semana:                                   #CREAR DATA FRAME CON LA SEMANA
 
 def importar():
 
-    global df, dfv, df_dtr, df_dpa, df_dmo, df_dni, df_dpi, df_dpu, fusion
+    global df, dfv, df_dtr, df_dpa, df_dmo, df_dni, df_dpi, df_dpu, fusion, info_0
 
     import_file_path = filedialog.askopenfilename()
     df = pd.read_excel(import_file_path, sheet_name='Data')
@@ -211,32 +220,33 @@ def importar():
     df['WPOND'] = df.WTR + df.WPA + df.WMO + df.WNI + df.WPI + df.WPU
 
 ##########################SEPARAMOS LOS PESOS POR AVANCE DE CADA ETAPA
-    df_dtr = df[["ESP", "ID", 'Barcode', "WEIGHT", "Ratio", "DTR", "WTR", "ETR"]]
+
+    df_dtr = df[["ESP", "ID", 'Barcode', "WEIGHT", "Ratio", "DTR", "WTR", "ETR",'FASE']]
     df_dtr = df_dtr.dropna(subset=['DTR'])  # Elimina llas filas vacias de DTR
     df_dtr["Etapa"] = "1-Traslado"
     df_dtr = df_dtr.rename(columns={'WTR': 'WPOND', "DTR": 'Fecha', 'ETR': 'HGan'})
 
-    df_dpa = df[["ESP", "ID", 'Barcode', "WEIGHT", "Ratio", "DPA", "WPA", "EPA"]]
+    df_dpa = df[["ESP", "ID", 'Barcode', "WEIGHT", "Ratio", "DPA", "WPA", "EPA",'FASE']]
     df_dpa = df_dpa.dropna(subset=['DPA'])
     df_dpa["Etapa"] = "2-Ensamble"
     df_dpa = df_dpa.rename(columns={'WPA': 'WPOND', "DPA": 'Fecha', 'EPA': 'HGan'})
 
-    df_dmo = df[["ESP", "ID", 'Barcode', "WEIGHT", "Ratio", "DMO", "WMO", "EMO"]]
+    df_dmo = df[["ESP", "ID", 'Barcode', "WEIGHT", "Ratio", "DMO", "WMO", "EMO",'FASE']]
     df_dmo = df_dmo.dropna(subset=['DMO'])
     df_dmo["Etapa"] = "3-Montaje"
     df_dmo = df_dmo.rename(columns={'WMO': 'WPOND', "DMO": 'Fecha', 'EMO': 'HGan'})
 
-    df_dni = df[["ESP", "ID", 'Barcode', "WEIGHT", "Ratio", "DNI", "WNI", "ENI"]]
+    df_dni = df[["ESP", "ID", 'Barcode', "WEIGHT", "Ratio", "DNI", "WNI", "ENI",'FASE']]
     df_dni = df_dni.dropna(subset=['DNI'])
     df_dni["Etapa"] = "4-Alineamiento"
     df_dni = df_dni.rename(columns={'WNI': 'WPOND', "DNI": 'Fecha', 'ENI': 'HGan'})
 
-    df_dpi = df[["ESP", "ID", 'Barcode', "WEIGHT", "Ratio", "DPI", "WPI", "EPI"]]
+    df_dpi = df[["ESP", "ID", 'Barcode', "WEIGHT", "Ratio", "DPI", "WPI", "EPI",'FASE']]
     df_dpi = df_dpi.dropna(subset=['DPI'])
     df_dpi["Etapa"] = "5-Touch Up"
     df_dpi = df_dpi.rename(columns={'WPI': 'WPOND', "DPI": 'Fecha', 'EPI': 'HGan'})
 
-    df_dpu = df[["ESP", "ID", 'Barcode', "WEIGHT", "Ratio", "DPU", "WPU", "EPU"]]
+    df_dpu = df[["ESP", "ID", 'Barcode', "WEIGHT", "Ratio", "DPU", "WPU", "EPU",'FASE']]
     df_dpu = df_dpu.dropna(subset=['DPU'])
     df_dpu["Etapa"] = "6-Punch List"
     df_dpu = df_dpu.rename(columns={'WPU': 'WPOND', "DPU": 'Fecha', 'EPU': 'HGan'})
@@ -251,10 +261,16 @@ def importar():
     np_array = dfv.to_numpy()
 
     dfv = pd.DataFrame(data=np_array,
-                       columns=['ESP', 'ID', 'Barcode', 'WEIGHT', 'Ratio', 'Fecha', 'WPOND', 'HGan', 'Etapa',
+                       columns=['ESP', 'ID', 'Barcode', 'WEIGHT', 'Ratio', 'Fecha', 'WPOND', 'HGan','FASE', 'Etapa',
                                    'WBRUTO'])
     dfv["Fecha"] = pd.to_datetime(dfv.Fecha).dt.date
 
+    temp_info0=dfv[['Fecha', 'WPOND', 'WBRUTO']]
+
+    info_0 = temp_info0.groupby(['Fecha']).sum() / 1000
+
+    info_0['WPACUM'] = info_0['WPOND'].cumsum()
+    info_0['WBACUM'] = info_0['WBRUTO'].cumsum()
 
     #########################infromacion general########################                                                INFORMACION GENERAL
     sum_proy = round(df["WEIGHT"].sum() / 1000, 0)
@@ -273,35 +289,33 @@ def importar():
     #####################################################################################
 
     fusion = pd.read_excel(import_file_path, sheet_name='Input')
-    fusion=fusion[['Code','Weight_OT','Fi','Ff','Weight_Tk']]
+    fusion=fusion[['Item','Code','Fi','Ff','Dias','Weight_Tk']]
 
     fusion["Fi"] = pd.to_datetime(fusion.Fi).dt.date                    #Se eliminan las horas a la fecha
     fusion["Ff"] = pd.to_datetime(fusion.Ff).dt.date                    #Se eliminan las horas a la fecha
 
-    tree = ttk.Treeview(Regre)
-    tree['column'] = list(fusion.columns)
-    tree['show'] = 'headings'
+    tree5 = ttk.Treeview(Regre)
+    tree5['column'] = list(fusion.columns)
+    tree5['show'] = 'headings'
     # loop trhu column
-    for column in tree['column']:
-        tree.heading(column, text=column)
+    for column in tree5['column']:
+        tree5.heading(column, text=column)
 
     df_rows = fusion.to_numpy().tolist()
     for row in df_rows:
-        tree.insert("", "end", values=row)
-    tree.place(x=5, y=30)
+        tree5.insert("", "end", values=row)
+    tree5.place(x=5, y=31)
 
-    tree.column("#1", width=89, minwidth=89, stretch=tk.NO)
-    tree.column("#2", width=65, minwidth=65, stretch=tk.NO)
-    tree.column("#3", width=68, minwidth=68, stretch=tk.NO)
-    tree.column("#4", width=79, minwidth=79, stretch=tk.NO)
-    tree.column("#5", width=79, minwidth=79, stretch=tk.NO)
+    tree5.column("#1", width=50,stretch=tk.NO,anchor="center")
+    tree5.column("#2", width=100, stretch=tk.NO,anchor="center")
+    tree5.column("#3", width=88, stretch=tk.NO,anchor="center")
+    tree5.column("#4", width=88, stretch=tk.NO,anchor="center")
+    tree5.column("#5", width=50, stretch=tk.NO,anchor="center")
+    tree5.column("#6", width=80, stretch=tk.NO, anchor="center")
 
-
-
-
-
-################################################################DETALLE##############################################
-
+    desl5 = ttk.Scrollbar(Regre, orient="vertical", command=tree5.yview)
+    desl5.place(x=453, y=32, height=225)
+    tree5.configure(yscrollcommand=desl5.set)
 
 def pbi1():  # FUNCION EXPORTAR PARA PBI
     global df, dfv
@@ -314,11 +328,8 @@ def pbi1():  # FUNCION EXPORTAR PARA PBI
     dfpbi.to_csv(export_file + '/Matriz.csv', index=False)
     dfv.to_csv(export_file + '/QB_PBI.csv', header=True, index=False)
 
-
-#VENTANA DETALLE
-
 def filtrar():
-    global animatrix2, info1, info2, info3, Nsemana, df
+    global animatrix2, info1, info2, info3, Nsemana, df, info4
 
     efechai = pd.to_datetime(fechai.get())
     efechaf = pd.to_datetime(fechaf.get())
@@ -373,16 +384,20 @@ def filtrar():
         tree.insert("", "end", values=row)
     tree.place(x=7, y=162)
 
-    tree.column("#1", width=89, minwidth=89, stretch=tk.NO)
-    tree.column("#2", width=65, minwidth=65, stretch=tk.NO)
-    tree.column("#3", width=68, minwidth=68, stretch=tk.NO)
-    tree.column("#4", width=79, minwidth=79, stretch=tk.NO)
-    tree.column("#5", width=79, minwidth=79, stretch=tk.NO)
+    tree.column("#1", width=89, minwidth=89, stretch=tk.NO,anchor="center")
+    tree.column("#2", width=65, minwidth=65, stretch=tk.NO,anchor="center")
+    tree.column("#3", width=68, minwidth=68, stretch=tk.NO,anchor="center")
+    tree.column("#4", width=79, minwidth=79, stretch=tk.NO,anchor="center")
+    tree.column("#5", width=79, minwidth=79, stretch=tk.NO,anchor="center")
     ######################################frame 3#################                                                      #SELECCION POR ESP
 
-    temp_info2 = df[['ESP', 'WEIGHT', 'WPOND', 'WBRUTO']]
+    temp_info2a = animatrix2[['ESP', 'WPOND', 'WBRUTO']]
+    temp_info2b = temp_info2a.groupby(['ESP']).sum() * 0.001
 
-    info2 = temp_info2.groupby(['ESP']).sum() / 1000
+    temp_info2c= df[['ESP', 'WEIGHT']]
+    temp_info2d = temp_info2c.groupby(['ESP']).sum() * 0.001
+
+    info2=pd.concat([temp_info2d,temp_info2b],axis=1).sort_values('ESP')
 
     info2.reset_index(inplace=True)
 
@@ -406,12 +421,12 @@ def filtrar():
         tree2.insert("", "end", values=row)
     tree2.place(x=7, y=440)
 
-    tree2.column("#1", width=75, minwidth=75, stretch=tk.NO)
-    tree2.column("#2", width=55, minwidth=55, stretch=tk.NO)
-    tree2.column("#3", width=55, minwidth=55, stretch=tk.NO)
-    tree2.column("#4", width=55, minwidth=55, stretch=tk.NO)
-    tree2.column("#5", width=70, minwidth=70, stretch=tk.NO)
-    tree2.column("#6", width=70, minwidth=70, stretch=tk.NO)
+    tree2.column("#1", width=75, minwidth=75, stretch=tk.NO,anchor="center")
+    tree2.column("#2", width=55, minwidth=55, stretch=tk.NO,anchor="center")
+    tree2.column("#3", width=55, minwidth=55, stretch=tk.NO,anchor="center")
+    tree2.column("#4", width=55, minwidth=55, stretch=tk.NO,anchor="center")
+    tree2.column("#5", width=70, minwidth=70, stretch=tk.NO,anchor="center")
+    tree2.column("#6", width=70, minwidth=70, stretch=tk.NO,anchor="center")
 
     ##label resultados
     Label(General, text=round(info1['WPOND'].sum(), 2), bg=d_color['fondo']).place(x=87, y=392)
@@ -459,23 +474,26 @@ def filtrar():
         tree3.insert("", "end", values=row)
     tree3.place(x=424, y=162)
 
-    tree3.column("#1", width=75, minwidth=75, stretch=tk.NO)
-    tree3.column("#2", width=70, minwidth=70, stretch=tk.NO)
-    tree3.column("#3", width=70, minwidth=70, stretch=tk.NO)
-    tree3.column("#4", width=79, minwidth=79, stretch=tk.NO)
-    tree3.column("#5", width=79, minwidth=79, stretch=tk.NO)
+    tree3.column("#1", width=75, minwidth=75, stretch=tk.NO,anchor="center")
+    tree3.column("#2", width=70, minwidth=70, stretch=tk.NO,anchor="center")
+    tree3.column("#3", width=70, minwidth=70, stretch=tk.NO,anchor="center")
+    tree3.column("#4", width=79, minwidth=79, stretch=tk.NO,anchor="center")
+    tree3.column("#5", width=79, minwidth=79, stretch=tk.NO,anchor="center")
 
+    temp_info4a = animatrix2[['FASE', 'WPOND', 'WBRUTO']]
+    temp_info4b = temp_info4a.groupby(['FASE']).sum() * 0.001
 
-    temp_info4 = df[['FASE', 'WEIGHT', 'WPOND', 'WBRUTO']]
+    temp_info4c= df[['FASE', 'WEIGHT']]
+    temp_info4d = temp_info4c.groupby(['FASE']).sum() * 0.001
 
-    info4 = temp_info4.groupby(['FASE']).sum() / 1000
+    info4=pd.concat([temp_info4d,temp_info4b],axis=1).sort_values('FASE')
 
     info4.reset_index(inplace=True)
 
     info4.rename(columns={'WEIGHT': 'Total'}, inplace=True)
 
-    info4['Pond%'] = info2.WPOND / info2.Total * 100
-    info4['Bruto%'] = info2.WBRUTO / info2.Total * 100
+    info4['Pond%'] = info4.WPOND / info4.Total * 100
+    info4['Bruto%'] = info4.WBRUTO / info4.Total * 100
 
     info4 = info4.round(2)
     info4.fillna(0, inplace=True)
@@ -492,12 +510,12 @@ def filtrar():
         tree4.insert("", "end", values=row)
     tree4.place(x=423, y=440)
 
-    tree4.column("#1", width=75, minwidth=75, stretch=tk.NO)
-    tree4.column("#2", width=55, minwidth=55, stretch=tk.NO)
-    tree4.column("#3", width=55, minwidth=55, stretch=tk.NO)
-    tree4.column("#4", width=55, minwidth=55, stretch=tk.NO)
-    tree4.column("#5", width=70, minwidth=70, stretch=tk.NO)
-    tree4.column("#6", width=70, minwidth=70, stretch=tk.NO)
+    tree4.column("#1", width=75, minwidth=75, stretch=tk.NO,anchor="center")
+    tree4.column("#2", width=55, minwidth=55, stretch=tk.NO,anchor="center")
+    tree4.column("#3", width=55, minwidth=55, stretch=tk.NO,anchor="center")
+    tree4.column("#4", width=55, minwidth=55, stretch=tk.NO,anchor="center")
+    tree4.column("#5", width=70, minwidth=70, stretch=tk.NO,anchor="center")
+    tree4.column("#6", width=70, minwidth=70, stretch=tk.NO,anchor="center")
 
 
 
@@ -519,8 +537,6 @@ def filtrar():
     desl4.place(x=800, y=441, height=225)
     tree4.configure(yscrollcommand=desl4.set)
 
-
-
 def reporte():  # FUNCION EXPORTAR PARA PBI
     global animatrix2, info1, info2, info3, Nsemana
 
@@ -539,12 +555,12 @@ def reporte():  # FUNCION EXPORTAR PARA PBI
     animatrix2.to_excel(writer, sheet_name='General', index=True)
     info1.to_excel(writer, sheet_name='Dia', index=False)
     filtro_mes.to_excel(writer, sheet_name='Mes', index=False)
-    info3.to_excel(writer, sheet_name='Semana')
     info2.to_excel(writer, sheet_name='ESP')
+    info3.to_excel(writer, sheet_name='Semana', index=False)
+    info4.to_excel(writer, sheet_name='Fase')
 
     # Close the Pandas Excel writer and output the Excel file.
     writer.save()
-
 
 def pintadog2():  # FUNCION EXPORTAR PARA PINTAR
     global animatrix2
@@ -585,9 +601,7 @@ def pintadog2():  # FUNCION EXPORTAR PARA PINTAR
     pint_dpi.to_csv(export_file + '/dpi_tekla.csv', index=False)
     pint_dpu.to_csv(export_file + '/dpu_tekla.csv', index=False)
 
-
 def graficos():
-    global animatrix2, info1, info2, info3
 
     if combo.get()=="Montaje Diario":
 
@@ -607,6 +621,7 @@ def graficos():
                           ))
         fig.update_xaxes(categoryorder='total ascending'
                          )
+
         fig.show()
 
 
@@ -657,74 +672,250 @@ def graficos():
         fig.show()
 
 def proyeccion():
-    global fusion, df_total
+    global fusion, info_proy, info_total
     k = 0
+
+    #Se crean todas las fases y su distribucion.
     for i in fusion.Fi:
-        dataframe = Calular(fusion.loc[k, 'Weight_OT'], fusion.loc[k, 'Fi'], fusion.loc[k, 'Ff']).met1()
+        dataframe = Calular(fusion.loc[k, 'Weight_Tk'], fusion.loc[k, 'Fi'], fusion.loc[k, 'Ff']).met1()
         k = k + 1
         list_fase.append(k)
         globals()["df_fase" + str(k)] = dataframe
+
 
     combo2["values"] = list_fase
     combo2.current(0)
 
     #Se crea listado de fechas para index
 
-    fi = date(2019, 10, 10)
-    ff = date(2022, 4, 15)
-    t = (ff - fi).days
+    fi = date(2019, 10, 31)   # Fecha inicial de Repore
+    ff = date(2022, 4, 15)    # Fecha estimada de termino
 
     ft = [fi + timedelta(days=d) for d in range((ff - fi).days + 1)]  # CREAMOS LA LISTA DE FECHAS
     dft = pd.DataFrame({'Fecha': ft})
     dft.set_index('Fecha', inplace=True)
 
-    df_total = pd.concat(
-        [dft, df_fase1, df_fase2, df_fase3, df_fase4, df_fase5, df_fase6, df_fase7, df_fase8, df_fase9, df_fase10,
-         df_fase11, df_fase12,
-         df_fase13, df_fase14, df_fase15, df_fase16, df_fase17, df_fase18, df_fase19, df_fase20, df_fase21, df_fase22,
-         df_fase23, df_fase24,
-         df_fase25, df_fase26, df_fase27, df_fase28, df_fase29, df_fase30, df_fase31, df_fase32, df_fase33, df_fase34,
-         df_fase35, df_fase36, df_fase37,
-         df_fase38, df_fase39, df_fase40, df_fase41, df_fase42, df_fase43, df_fase44, df_fase45, df_fase46, df_fase47,
-         df_fase48, df_fase49,
-         df_fase50, df_fase51, df_fase52, df_fase53, df_fase54], axis=1)
+    info_proy=dft
 
-    df_total = df_total.fillna(0)
-    df_total["Total_1"] = df_total.sum(axis=1)
-    df_total['Acum_1'] = df_total['Total_1'].cumsum()
-
+    #Concatenando las fases para el info proy
     for i in list_fase:
+
+        globals()["concat" + str(i)]=pd.concat([  info_proy,globals()["df_fase" + str(i)]  ],axis=1)
+        info_proy=globals()["concat" + str(i)]
+
+    #Añadimos a cada fase la suma acumulada
+    for i in list_fase:
+
         globals()["df_fase" + str(i)]['Total']=globals()["df_fase" + str(i)].sum(axis=1)
         globals()["df_fase" + str(i)]['Acum']=globals()["df_fase" + str(i)]['Total'].cumsum()
 
+    info_proy = info_proy.fillna(0)
+    info_proy["Total_1"] = info_proy.sum(axis=1)
+    info_proy['Acum_1'] = info_proy['Total_1'].cumsum()
 
-def Grafic_gen():
+    info_total=pd.concat([info_proy.Acum_1,info_0[['WPACUM','WBACUM']]],axis=1)
 
-    fig = make_subplots(rows=2, cols=1)
+    #Se llenan los vacios hasta el ultimo dato
+    info_total=info_total.apply(lambda series: series.loc[:series.last_valid_index()].ffill())
 
-    fig.append_trace(go.Scatter(
-        x=df_total.index,
-        y=df_total.Total_1,
-        name='Montaje diario'
-    ), row=1, col=1)
+    dfv_proy=dfv[['Fecha','WPOND','WBRUTO','FASE']]
 
-    fig.append_trace(go.Scatter(
-        x=df_total.index,
-        y=df_total.Acum_1,
-        name='Montaje Acumulado'
-    ), row=2, col=1)
+    #Se filtran las fases reales
+    for i in list_fase:
+        f = dfv_proy[(dfv_proy['FASE'] == i)]
+        globals()["df_faser" + str(i)]=f.groupby(['Fecha']).sum()
+        globals()["df_faser" + str(i)]=globals()["df_faser" + str(i)][['WPOND','WBRUTO']]
+        globals()["df_faser" + str(i)]['WPACUM'] = globals()["df_faser" + str(i)]['WPOND'].cumsum()*0.001
+        globals()["df_faser" + str(i)]['WBACUM']=globals()["df_faser" + str(i)]['WBRUTO'].cumsum()*0.001
 
-    fig.show()
 
-def Grafic_fase():
+    #Concatenamos todas las fases
+    for i in list_fase:
+        globals()["df_faset" + str(i)]=pd.concat([globals()["df_faser" + str(i)],globals()["df_fase" + str(i)]],axis=1)
+        globals()["df_faset" + str(i)]=globals()["df_faset" + str(i)].sort_values('Fecha')
+        globals()["df_faset" + str(i)]=globals()["df_faset" + str(i)].apply(lambda series: series.loc[:series.last_valid_index()].ffill())
+
+def exportar():  # FUNCION EXPORTAR PARA PBI
+
+    export_file = filedialog.askdirectory()  # Buscamos el directorio para guardar
+    # Creamos una excel y le indicamos la ruta
+    writer = pd.ExcelWriter(export_file + '/' + 'Report_Proyectado.xlsx')
+
+    # Write each dataframe to a different worksheet.
+    globals()["df_faset" + str(combo2.get())].to_excel(writer, sheet_name='Detalle', index=True)
+
+    writer.save()
+
+def Grafic_fased():
 
     x = globals()["df_fase" + str(combo2.get())].index
     y = globals()["df_fase" + str(combo2.get())].Total
-    fig1 = go.Figure(data=go.Scatter(x=x, y=y))
+    fig1 = go.Figure(data=go.Bar(x=x, y=y))
+    fig1.update_layout(title='Plan de Montaje diario - Fase '+str(combo2.get()),
+                        yaxis=dict(
+                        title='Toneladas',
+                        titlefont_size=16,
+                        tickfont_size=14,))
     fig1.show()
 
+def Grafic_fasea():
+
+    x = globals()["df_fase" + str(combo2.get())].index
+    y = globals()["df_fase" + str(combo2.get())].Acum
+    fig2 = go.Figure(data=go.Scatter(x=x, y=y))
+    fig2.update_layout(title='Plan de Montaje Acumulado - Fase ' + str(combo2.get()),
+                        yaxis=dict(
+                        title='Toneladas',
+                        titlefont_size=16,
+                        tickfont_size=14,))
+    fig2.show()
+
+def Grafic_fasedr():
+
+    x = globals()["df_faser" + str(combo2.get())].index
+    y = globals()["df_faser" + str(combo2.get())].WPOND
+    fig3 = go.Figure(data=go.Bar(x=x, y=y))
+    fig3.update_layout(title='Montaje Real Diario - Fase ' + str(combo2.get()),
+                        yaxis=dict(
+                        title='Toneladas',
+                        titlefont_size=16,
+                        tickfont_size=14,))
+    fig3.show()
+
+def Grafic_fasear():
+
+    x = globals()["df_faser" + str(combo2.get())].index
+    y = globals()["df_faser" + str(combo2.get())].WPACUM
+    fig4 = go.Figure(data=go.Scatter(x=x, y=y))
+    fig4.update_layout(title='Montaje Real Acumulado - Fase ' + str(combo2.get()),
+                        yaxis=dict(
+                        title='Toneladas',
+                        titlefont_size=16,
+                        tickfont_size=14,))
+    fig4.show()
+
+def Grafic_faset():
 
 
+    fig5 = go.Figure()
+
+    # Add traces
+    fig5.add_trace(go.Scatter(x=globals()["df_faset" + str(combo2.get())].index, y=globals()["df_faset" + str(combo2.get())].WPACUM,
+                             mode='lines+markers',
+                             name='Montaje Ponderado Acumulado'))
+    fig5.add_trace(go.Scatter(x=globals()["df_faset" + str(combo2.get())].index, y=globals()["df_faset" + str(combo2.get())].WBACUM,
+                             mode='lines+markers',
+                             name='Montaje Bruto Acumulado'))
+    fig5.add_trace(go.Scatter(x=globals()["df_faset" + str(combo2.get())].index, y=globals()["df_faset" + str(combo2.get())].Acum,
+                             mode='lines+markers',
+                             name='Plan de Montaje'))
+
+    fig5.update_layout(title='Montaje de Estructuras Real vs Proyectado Fase ' + str(combo2.get()) )
+
+    fig5.show()
+
+def Grafic_Proy_realf():
+
+    fig6 = make_subplots(rows=2, cols=1)
+
+    fig6.append_trace(go.Bar(
+        x=info_proy.index,
+        y=info_proy.Total_1,
+        name='Montaje diario'
+    ), row=1, col=1)
+
+    fig6.append_trace(go.Scatter(
+        x=info_proy.index,
+        y=info_proy.Acum_1,
+        name='Montaje Acumulado'
+    ), row=2, col=1)
+
+    fig6.update_layout(title='PLAN GENERAL DE MONTAJE DE ESTRUCTURAS',
+                        yaxis=dict(
+                        title='Toneladas',
+                        titlefont_size=16,
+                        tickfont_size=14,))
+
+    fig6.show()
+
+def Grafic_Proy_realt():
+    fig7 = go.Figure(data=[
+        go.Scatter(name='Montaje Ponderado', x=info_total.index, y=info_total.WPACUM),
+        go.Scatter(name='Montaje Bruto', x=info_total.index, y=info_total.WBACUM),
+        go.Scatter(name='PROYECTADO', x=info_total.index, y=info_total.Acum_1)
+    ])
+    # Change the bar mode
+    fig7.update_layout(barmode='group', xaxis_tickangle=-45,
+                      font=dict(
+                          family="Courier New, monospace",
+                          size=18,
+                          color="RebeccaPurple"
+                      ))
+    fig7.update_layout(title='MONTAJE DE ESTRUCTURAS REAL VS PROYECTADO',
+                        yaxis=dict(
+                        title='Toneladas',
+                        titlefont_size=14,
+                        tickfont_size=14,))
+    fig7.show()
+
+def forecast():
+
+    tempserie=info_total.copy()
+    tempserie['Fecha']=tempserie.index
+    tempserie.reset_index(drop=True,inplace=True)
+
+    bserie = tempserie[['Fecha','WBACUM']].dropna()
+    pserie = tempserie[['Fecha', 'WPACUM']].dropna()
+    fores = tempserie[['Fecha','Acum_1']].dropna()
+
+    d_pro=int(euser2.get())
+
+    ind_forb = [bserie.Fecha.max() + timedelta(days=d) for d in range(d_pro)]  # CREAMOS LA LISTA DE FECHAS
+    ind_forp = [pserie.Fecha.max() + timedelta(days=d) for d in range(d_pro)]  # CREAMOS LA LISTA DE FECHAS
+
+    pserie_model = auto_arima(pserie.WPACUM, start_p=1, start_q=1,
+                              max_p=4, max_q=4, m=15,
+                              start_P=0, seasonal=True,
+                              d=1, D=1, trace=True,
+                              error_action='ignore',
+                              suppress_warnings=True,
+                              stepwise=True)
+
+    pserie_fore = pserie_model.predict(n_periods=d_pro)
+    pserie_fore = pd.DataFrame(pserie_fore, index=ind_forb, columns=['Prediction'])
+
+    bserie_model = auto_arima(bserie.WBACUM, start_p=1, start_q=1,
+                              max_p=4, max_q=4, m=15,
+                              start_P=0, seasonal=True,
+                              d=1, D=1, trace=True,
+                              error_action='ignore',
+                              suppress_warnings=True,
+                              stepwise=True)
+
+    bserie_fore = bserie_model.predict(n_periods=d_pro)
+    bserie_fore = pd.DataFrame(bserie_fore, index=ind_forp, columns=['Prediction'])
+
+    fig0 = go.Figure(data=[
+        go.Scatter(name='PONDERADO FORESC', x=pserie_fore.index, y=pserie_fore.Prediction),
+        go.Scatter(name='PONDERADO REAL', x=pserie.Fecha, y=pserie.WPACUM),
+        go.Scatter(name='PROYECTADO INICIAL', x=fores.Fecha, y=fores.Acum_1),
+        go.Scatter(name='BRUTO REAL', x=bserie.Fecha, y=bserie.WBACUM),
+        go.Scatter(name='BRUTO FORESC', x=bserie_fore.index, y=bserie_fore.Prediction)
+
+    ])
+    # Change the bar mode
+    fig0.update_layout(barmode='group', xaxis_tickangle=-45,
+                       font=dict(
+                           family="Courier New, monospace",
+                           size=18,
+                           color="RebeccaPurple"
+                       ))
+    fig0.update_layout(title='MONTAJE DE ESTRUCTURAS REAL VS PROYECTADO',
+                       yaxis=dict(
+                           title='Toneladas',
+                           titlefont_size=14,
+                           tickfont_size=14, ))
+    fig0.show()
 
 # LECTURA Y CAMBIO DE NOMBRES A LAS COLUMNAS
 
@@ -774,12 +965,10 @@ Widget(General, d_color['boton'], 13, 2, 194, 693).boton('Power Bi', pbi1)
 Widget(General, d_color['boton'], 13, 2, 329, 693).boton('Exp. Tekla', pintadog2)
 Widget(General,d_color['boton'],13,2,574,693).boton('Gráficos',graficos)
 
-
 ##Creando los entry
 def on_click(event):
     euser.config(state=NORMAL)
     euser.delete(0, END)
-
 
 euser = Entry(General, width=10)
 euser.insert(0, 'USER_FIELD')
@@ -807,13 +996,11 @@ chekqu5.place(x=715, y=105)
 chekqu6 = Checkbutton(General, text='Punch-List', variable=qui6, bg=d_color['fondo'])
 chekqu6.place(x=715, y=130)
 
-
 ##Creando Combobox
 combo = ttk.Combobox(General, state="readonly")
 combo.place(x=676,y=712)
 combo["values"] = ["Montaje Diario", "Montaje Semanal", "Montaje por ESP",'Montaje Diario Acumulado']
 combo.current(0)
-
 
 # creando entrada de Fechas
 fechai = DateEntry(General, width=16, bg='blue', date_pattern='yyyy/MM/dd', year=2019, month=10, day=1)
@@ -821,26 +1008,44 @@ fechai.place(x=480, y=5)
 fechaf = DateEntry(General, width=16, bg='blue', date_pattern='yyyy/MM/dd', year=2021, month=2, day=28)
 fechaf.place(x=480, y=40)
 
-
-
-
 ##############################################################################################################
+###Creando los label
+Widget(Regre, d_color['fondo'], 1, 1, 7, 5).letra('Detalle de Fases')
+Widget(Regre, d_color['fondo'], 1, 1, 600, 5).letra('Gráficos de Generales')
+Widget(Regre, d_color['fondo'], 1, 1, 600, 280).letra('Gráficos por Fases')
 
-Widget(Regre, d_color['fondo'], 395, 229, 5, 30).marco()     #FRAME RESUMEN POR FECHA
+###Creando los Buttons
+Widget(Regre, d_color['boton'], 10, 7, 475, 28).boton('Calcular', proyeccion)
+Widget(Regre, d_color['boton'], 13, 3, 604, 305).boton('Proy Dia', Grafic_fased)
+Widget(Regre, d_color['boton'], 13, 3, 706, 305).boton('Proy Acum.', Grafic_fasea)
+Widget(Regre, d_color['boton'], 13, 3, 604, 362).boton('Real  Dia', Grafic_fasedr)
+Widget(Regre, d_color['boton'], 13, 3, 706, 362).boton('Real Acum.', Grafic_fasear)
+Widget(Regre, d_color['boton'], 28, 2, 602, 419).boton('Real vs Proy', Grafic_faset)
+Widget(Regre, d_color['boton'], 28, 3, 602, 28).boton('Proyectado Total', Grafic_Proy_realf)
+Widget(Regre, d_color['boton'], 28, 3, 602, 85).boton('Real vs Proy', Grafic_Proy_realt)
+Widget(Regre, d_color['boton'], 28, 2, 602, 461).boton('Exportar', exportar)
+Widget(Regre, d_color['boton'], 28, 2, 602, 661).boton('Forecast', forecast)
 
-Widget(Regre, d_color['boton'], 10, 7, 460, 9).boton('Expandir', proyeccion)
-Widget(Regre, d_color['boton'], 10, 7, 460, 240).boton('Grafico', Grafic_fase)
-Widget(Regre, d_color['boton'], 10, 7, 460, 440).boton('Graph Gen', Grafic_gen)
+###Creando los Frames
+Widget(Regre, d_color['fondo'], 466, 228, 5, 30).marco()     #FRAME RESUMEN POR FECHA
+#Widget(Regre, d_color['fondo'], 200, 158, 600, 30).marco()
+
+##Creando los entry
+def on_click2(event):
+    euser2.config(state=NORMAL)
+    euser2.delete(0, END)
+
+#creando entri de periodos
+euser2 = Entry(Regre, width=10)
+euser2.insert(0, 'DIAS_PROYEC')
+euser2.config(state=DISABLED)
+euser2.bind('<Button-1>', on_click2)
+euser2.place(x=602, y=710)
 
 ##Creando Combobox
-combo2 = ttk.Combobox(Regre, state="readonly")
-combo2.place(x=676,y=712)
+combo2 = ttk.Combobox(Regre, state="readonly",width=8)
+combo2.place(x=735,y=280)
 list_fase=[]
 combo2["values"] = list_fase
-
-
-
-
-
 
 root.mainloop()
